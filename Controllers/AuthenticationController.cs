@@ -22,11 +22,13 @@ namespace Authentication_Servie.Controllers
         private readonly ApplicationDbContext _db;
         private readonly JwtService _jwt;
         private readonly IDistributedCache _cache;
-        public AuthenticationController(ApplicationDbContext db, JwtService jwt, IDistributedCache cache)
+        private readonly QuestDbService _questDbService;
+        public AuthenticationController(ApplicationDbContext db, JwtService jwt, IDistributedCache cache, QuestDbService questDbService)
         {
             _db = db;
             _jwt = jwt;
             _cache = cache;
+            _questDbService = questDbService;
         }
 
         [HttpPost("register-user")]
@@ -105,96 +107,32 @@ namespace Authentication_Servie.Controllers
                 refreshToken = newRefreshToken
             });
         }
-        //[HttpGet("google/login")]
-        //public IActionResult GoogleLogin()
-        //{
-        //    var props = new AuthenticationProperties
-        //    {
-        //        RedirectUri = Url.Action(nameof(GoogleCallback))
-        //    };
-        //    return Challenge(props, "Google");
-        //}
+     
 
         [HttpGet("google/login")]
-        [AllowAnonymous]
         public IActionResult GoogleLogin()
         {
-            var properties = new AuthenticationProperties
+            var props = new AuthenticationProperties
             {
                 RedirectUri = "/api/authentication/google/callback"
             };
 
-            return Challenge(properties, GoogleDefaults.AuthenticationScheme);
+            return Challenge(props, GoogleDefaults.AuthenticationScheme);
         }
 
 
-        //        [HttpGet("google/callback")]
-        //        public async Task<IActionResult> GoogleCallback()
-        //        {
-        //            var result = await HttpContext.AuthenticateAsync(
-        //    CookieAuthenticationDefaults.AuthenticationScheme
-        //);
-
-        //            if (!result.Succeeded)
-        //                return Unauthorized();
-
-        //            var email = result.Principal.FindFirst(ClaimTypes.Email)?.Value;
-        //            var providerId = result.Principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-
-        //            if (email == null || providerId == null)
-        //                return Unauthorized();
-
-        //            var user = await _db.Users.FirstOrDefaultAsync(u =>
-        //                u.Provider == "Google" && u.ProviderId == providerId);
-
-        //            if (user == null)
-        //            {
-        //                user = new User
-        //                {
-        //                    Email = email,
-        //                    Username = email.Split('@')[0],
-        //                    Provider = "Google",
-        //                    ProviderId = providerId,
-        //                    Role = "User"
-        //                };
-
-        //                _db.Users.Add(user);
-        //                await _db.SaveChangesAsync();
-        //            }
-
-        //            // Issue OUR tokens
-        //            var accessToken = _jwt.GenerateToken(user);
-        //            var refreshToken = RefreshTokenGenerator.Generate();
-
-        //            await _cache.SetStringAsync(
-        //                $"refresh:{refreshToken}",
-        //                user.Id.ToString(),
-        //                new DistributedCacheEntryOptions
-        //                {
-        //                    AbsoluteExpirationRelativeToNow = TimeSpan.FromDays(7)
-        //                });
-
-        //            return Ok(new
-        //            {
-        //                accessToken,
-        //                refreshToken
-        //            });
-        //        }
-
-
         [HttpGet("google/callback")]
-        [AllowAnonymous]
         public async Task<IActionResult> GoogleCallback()
         {
             var result = await HttpContext.AuthenticateAsync(
-                CookieAuthenticationDefaults.AuthenticationScheme
+                Microsoft.AspNetCore.Identity.IdentityConstants.ExternalScheme
             );
 
             if (!result.Succeeded)
-                return Unauthorized("Google authentication failed");
+                return Unauthorized();
 
-            var email = result.Principal.FindFirstValue(ClaimTypes.Email);
-            var providerId = result.Principal.FindFirstValue(ClaimTypes.NameIdentifier);
+            var email = result.Principal.FindFirst(ClaimTypes.Email)?.Value;
+            var providerId = result.Principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
 
             if (email == null || providerId == null)
                 return Unauthorized();
@@ -228,11 +166,25 @@ namespace Authentication_Servie.Controllers
                     AbsoluteExpirationRelativeToNow = TimeSpan.FromDays(7)
                 });
 
+            await _questDbService.LogAuthEventAsync(
+                        user.Id,
+                        user.Email,
+                        "GOOGLE",
+                        "LOGIN_SUCCESS",
+                        HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                        Request.Headers["User-Agent"].ToString()
+);
+
+
+            await HttpContext.SignOutAsync(
+                Microsoft.AspNetCore.Identity.IdentityConstants.ExternalScheme
+            );
+
             return Ok(new
             {
                 accessToken,
                 refreshToken
-            });     
+            });
         }
 
 
