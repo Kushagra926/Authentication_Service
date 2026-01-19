@@ -23,12 +23,17 @@ namespace Authentication_Servie.Controllers
         private readonly JwtService _jwt;
         private readonly IDistributedCache _cache;
         private readonly QuestDbService _questDbService;
-        public AuthenticationController(ApplicationDbContext db, JwtService jwt, IDistributedCache cache, QuestDbService questDbService)
+        private readonly RiskScoringService _riskService;
+        private readonly IpRiskService _ipRiskService;
+
+        public AuthenticationController(ApplicationDbContext db, JwtService jwt, IDistributedCache cache, QuestDbService questDbService, RiskScoringService riskService, IpRiskService ipRiskService)
         {
             _db = db;
             _jwt = jwt;
             _cache = cache;
             _questDbService = questDbService;
+            _riskService = riskService;
+            _ipRiskService = ipRiskService;
         }
 
         [HttpPost("register-user")]
@@ -55,13 +60,51 @@ namespace Authentication_Servie.Controllers
         [HttpPost("login-user")]
         public async Task<IActionResult> Login(LoginRequest req)
         {
+
+            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+                if (await _cache.GetStringAsync($"blocked_ip:{ip}") != null)
+            {
+                return Unauthorized("IP temporarily blocked");
+            }
+        
+
             var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == req.Email);
 
             if (user == null)
-                return Unauthorized();
+            {
 
-            if (!PasswordHasher.Verify(req.Password, user.PasswordHash))
+                await _questDbService.LogAuthEventAsync(
+    0, req.Email, "LOCAL", "LOGIN_FAILED", ip,
+    Request.Headers["User-Agent"].ToString()
+);
+
                 return Unauthorized();
+            }
+            if (!PasswordHasher.Verify(req.Password, user.PasswordHash))
+            {
+                await _riskService.IncreaseUserRiskAsync(user.Id, 10);
+                await _ipRiskService.IncreaseIpRiskAsync(ip, 10);
+
+                await _questDbService.LogAuthEventAsync(
+                         user.Id,
+                          user.Email,
+                          "LOCAL",
+                          "LOGIN_FAILED",
+                          ip,
+                          Request.Headers["User-Agent"].ToString()
+                       );
+
+                return Unauthorized();
+            }
+
+            var risk = await _riskService.GetUserRiskAsync(user.Id);
+            if (risk >= 70)
+            {
+                return Unauthorized("Account temporarily locked due to suspicious activity");
+            }
+
+            await _riskService.ReduceUserRiskAsync(user.Id, 5);
 
             var token = _jwt.GenerateToken(user);
             var refreshToken = RefreshTokenGenerator.Generate();
@@ -73,6 +116,16 @@ namespace Authentication_Servie.Controllers
                 {
                     AbsoluteExpirationRelativeToNow = TimeSpan.FromDays(7)
                 });
+
+            await _questDbService.LogAuthEventAsync(
+    user.Id,
+    user.Email,
+    "LOCAL",
+    "LOGIN_SUCCESS",
+    ip,
+    Request.Headers["User-Agent"].ToString()
+);
+
 
             return Ok(new 
             {token,
@@ -117,6 +170,7 @@ namespace Authentication_Servie.Controllers
                 RedirectUri = "/api/authentication/google/callback"
             };
 
+
             return Challenge(props, GoogleDefaults.AuthenticationScheme);
         }
 
@@ -124,18 +178,49 @@ namespace Authentication_Servie.Controllers
         [HttpGet("google/callback")]
         public async Task<IActionResult> GoogleCallback()
         {
+            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+            if (await _cache.GetStringAsync($"blocked_ip:{ip}") != null)
+            {
+                return Unauthorized("IP temporarily blocked");
+            }
+
             var result = await HttpContext.AuthenticateAsync(
                 Microsoft.AspNetCore.Identity.IdentityConstants.ExternalScheme
             );
 
             if (!result.Succeeded)
-                return Unauthorized();
+            {
+                await _ipRiskService.IncreaseIpRiskAsync(ip, 20);
 
+                await _questDbService.LogAuthEventAsync(
+                           0,
+                           "unknown",
+                           "GOOGLE",
+                           "LOGIN_FAILED",
+                           ip,
+                           Request.Headers["User-Agent"].ToString()
+                           );
+
+                return Unauthorized();
+            }
             var email = result.Principal.FindFirst(ClaimTypes.Email)?.Value;
             var providerId = result.Principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
 
             if (email == null || providerId == null)
+            {
+                await _questDbService.LogAuthEventAsync(
+                       0,
+                       "unknown",
+                       "GOOGLE",
+                       "LOGIN_FAILED",
+                       ip,
+                       Request.Headers["User-Agent"].ToString()
+                    );
+
                 return Unauthorized();
+            }
+                
 
             var user = await _db.Users.FirstOrDefaultAsync(u =>
                 u.Provider == "Google" && u.ProviderId == providerId);
@@ -154,6 +239,16 @@ namespace Authentication_Servie.Controllers
                 _db.Users.Add(user);
                 await _db.SaveChangesAsync();
             }
+
+           
+            var risk = await _riskService.GetUserRiskAsync(user.Id);
+            if (risk >= 70)
+            {
+                return Unauthorized("Account temporarily locked due to suspicious activity");
+            }
+
+
+            await _riskService.ReduceUserRiskAsync(user.Id, 5);
 
             var accessToken = _jwt.GenerateToken(user);
             var refreshToken = RefreshTokenGenerator.Generate();
