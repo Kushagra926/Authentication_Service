@@ -213,14 +213,22 @@ Stolen refresh token abuse
 ---
 
 ### Technologies Used
-Layer	Tech
-Backend	ASP.NET Core Web API
-Authentication	JWT, OAuth 2.0
-Database	PostgreSQL
-Caching & Security State	Redis
-Telemetry	QuestDB
-Frontend	React
-Charts	Recharts
+
+### Backend:	ASP.NET Core Web API
+
+### Authentication:	JWT
+
+### OAuth 2.0
+
+### Database:	PostgreSQL
+
+### Caching & Security State:	Redis
+
+### Telemetry:	QuestDB
+
+### Frontend:	React
+
+### Charts:	Recharts
 
 ---
 
